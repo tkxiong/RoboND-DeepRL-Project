@@ -485,5 +485,12 @@
 		<plugin name="PropPlugin" filename="libgazeboPropPlugin.so" />
 	</model>
 
+	<!-- speed up gazebo simulation -->
+	<physics name='default_pyhsics' default='0' type='ode'>
+		<gravity>0.00000 0.00000 -9.80000</gravity>
+		<max_step_size>0.001</max_step_size>
+		<real_tiime_update_rate>0.0</real_time_update_rate>
+	</physics>
+
 </world>
 </sdf>
