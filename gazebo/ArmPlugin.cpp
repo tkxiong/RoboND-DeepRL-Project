@@ -10,10 +10,14 @@
 #include "cudaMappedMemory.h"
 #include "cudaPlanar.h"
 
+// TASK NUMBER
+#define TASK 1
+
 #define PI 3.141592653589793238462643383279502884197169f
 
 #define JOINT_MIN	-0.75f
 #define JOINT_MAX	 2.0f
+#define JOINT_DELTA  (5.5 * PI / 180)
 
 // Turn on velocity based control
 #define VELOCITY_CONTROL false
@@ -35,12 +39,15 @@
 /
 */
 
-#define INPUT_WIDTH   512
-#define INPUT_HEIGHT  512
-#define OPTIMIZER "None"
-#define LEARNING_RATE 0.0f
+// Using lower resolution images
+#define INPUT_WIDTH   128
+#define INPUT_HEIGHT  128
+#define OPTIMIZER "Adam"
+#define LEARNING_RATE 5e-3f
 #define REPLAY_MEMORY 10000
-#define BATCH_SIZE 8
+#define BATCH_SIZE 32
+
+// Recurrent
 #define USE_LSTM false
 #define LSTM_SIZE 32
 
@@ -51,8 +58,10 @@
 /
 */
 
-#define REWARD_WIN  0.0f
-#define REWARD_LOSS -0.0f
+#define REWARD_WIN  1.0f
+#define REWARD_LOSS -1.0f
+#define REWARD_BOOST 5.0f
+#define ALPHA 0.22f // moving average coefficient for interim reward
 
 // Define Object Names
 #define WORLD_NAME "arm_world"
@@ -72,7 +81,6 @@
 
 // Lock base rotation DOF (Add dof in header file if off)
 #define LOCKBASE true
-
 
 namespace gazebo
 {
@@ -158,8 +166,6 @@ bool ArmPlugin::createAgent()
 			NUM_ACTIONS, OPTIMIZER, LEARNING_RATE, REPLAY_MEMORY,
 			BATCH_SIZE, GAMMA, EPS_START, EPS_END, EPS_DECAY,
 			USE_LSTM, LSTM_SIZE, ALLOW_RANDOM, DEBUG);
-	
-	agent = NULL;
 
 	if( !agent )
 	{
@@ -249,25 +255,39 @@ void ArmPlugin::onCollisionMsg(ConstContactsPtr &contacts)
 		if(DEBUG){std::cout << "Collision between[" << contacts->contact(i).collision1()
 			     << "] and [" << contacts->contact(i).collision2() << "]\n";}
 
-	
+		bool collisionCheck = (contacts->contact(i).collision1() == COLLISION_ITEM);
+
 		/*
 		/ TODO - Check if there is collision between the arm and object, then issue learning reward
 		/
 		*/
 		
-		/*
-		
 		if (collisionCheck)
 		{
-			rewardHistory = None;
-
-			newReward  = None;
-			endEpisode = None;
-
+			if (TASK == 1)
+			{
+				rewardHistory = REWARD_WIN;
+				newReward  = true;
+				endEpisode = true;
+			}
+			else
+			{
+				bool gripperCheck = (contacts->contact(i).collision2() == COLLISION_POINT);
+				if(gripperCheck)
+				{
+					rewardHistory = REWARD_WIN;
+					newReward  = true;
+					endEpisode = true;
+			}
+				else
+				{
+					rewardHistory = REWARD_LOSS;
+					newReward  = true;
+					endEpisode = true;
+				}
+			}
 			return;
 		}
-		*/
-		
 	}
 }
 
@@ -346,7 +366,11 @@ bool ArmPlugin::updateAgent()
 	/ TODO - Increase or decrease the joint position based on whether the action is even or odd
 	/
 	*/
-	float joint = 0.0; // TODO - Set joint position based on whether action is even or odd.
+
+	int j_idx = (action / 2);
+	int sgn = ((action&1)? -1:1); // even = inc, odd = dec
+
+	float joint = ref[j_idx] + (sgn*JOINT_DELTA); // TODO - Set joint position based on whether action is even or odd.
 
 	// limit the joint to the specified range
 	if( joint < JOINT_MIN )
@@ -569,28 +593,28 @@ void ArmPlugin::OnUpdate(const common::UpdateInfo& updateInfo)
 		/ TODO - set appropriate Reward for robot hitting the ground.
 		/
 		*/
+
+		bool checkGroundContact = (gripBBox.min.z <= groundContact);
 		
 		
-		/*if(checkGroundContact)
+		if(checkGroundContact)
 		{
 						
 			if(DEBUG){printf("GROUND CONTACT, EOE\n");}
 
-			rewardHistory = None;
-			newReward     = None;
-			endEpisode    = None;
+			rewardHistory = REWARD_LOSS;
+			newReward     = true;
+			endEpisode    = true;
 		}
-		*/
 		
 		/*
 		/ TODO - Issue an interim reward based on the distance to the object
 		/
 		*/ 
 		
-		/*
 		if(!checkGroundContact)
 		{
-			const float distGoal = 0; // compute the reward from distance to the goal
+			const float distGoal = BoxDistance(gripBBox, propBBox); // compute the reward from distance to the goal
 
 			if(DEBUG){printf("distance('%s', '%s') = %f\n", gripper->GetName().c_str(), prop->model->GetName().c_str(), distGoal);}
 
@@ -600,13 +624,13 @@ void ArmPlugin::OnUpdate(const common::UpdateInfo& updateInfo)
 				const float distDelta  = lastGoalDistance - distGoal;
 
 				// compute the smoothed moving average of the delta of the distance to the goal
-				avgGoalDelta  = 0.0;
-				rewardHistory = None;
-				newReward     = None;	
+				avgGoalDelta  = avgGoalDelta * ALPHA + distDelta * (1.0 - ALPHA); // linear interpolation between a,b with weight (0<=w<=1)
+				rewardHistory = REWARD_BOOST * avgGoalDelta;
+				newReward     = true;	
 			}
 
 			lastGoalDistance = distGoal;
-		} */
+		}
 	}
 
 	// issue rewards and train DQN
